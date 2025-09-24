@@ -9,13 +9,13 @@ Original file is located at
 ## Instalación y carga de librerías
 """
 
-pip install gensim
+# pip install gensim
 
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-import os, re, sys, unicodedata, textwrap, math
+import os, re, sys, unicodedata, textwrap, math, random
 from collections import Counter
 from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold, GridSearchCV
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
@@ -26,9 +26,13 @@ from sklearn.ensemble import RandomForestClassifier, VotingClassifier, ExtraTree
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score
 from sklearn.pipeline import Pipeline, FeatureUnion
 from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import FunctionTransformer, StandardScaler
 import gensim
 from gensim.models import Word2Vec
-from scipy.sparse import csr_matrix, hstack
+from scipy.sparse import csr_matrix
+from scipy import sparse
+from joblib import dump, load
 import nltk
 from nltk.corpus import stopwords
 from nltk.stem import SnowballStemmer
@@ -36,6 +40,11 @@ nltk.download('stopwords')
 
 pd.set_option("display.max_colwidth", 200)
 plt.rcParams["figure.figsize"] = (10, 5)
+
+RANDOM_SEED = 42
+np.random.seed(RANDOM_SEED)
+random.seed(RANDOM_SEED)
+os.environ["PYTHONHASHSEED"] = str(RANDOM_SEED)
 
 """## 1) Cargar datos de forma robusta"""
 
@@ -366,63 +375,10 @@ print("Preprocesamiento completado.")
 
 """## VECTORIZACIÓN HÍBRIDA (TF-IDF + Word2Vec + Meta Features)"""
 
-# # === 5) VECTORIZACIÓN HÍBRIDA (TF-IDF + Word2Vec + Meta Features) ===
-# # Preparar datos para Word2Vec
-# sentences = [text.split() for text in train_df['processed_text']]
 
-# # Entrenar modelo Word2Vec
-# print("Entrenando modelo Word2Vec...")
-# w2v_model = Word2Vec(
-#     sentences=sentences,
-#     vector_size=100,    # Dimensionalidad de los vectores
-#     window=5,           # Contexto alrededor de la palabra
-#     min_count=2,        # Ignorar palabras muy raras
-#     workers=4,          # Núcleos de CPU a usar
-#     epochs=10           # Iteraciones sobre el corpus
-# )
-# print("Word2Vec entrenado.")
-
-# # Función para promediar vectores de palabras de un texto
-# def document_vector(word_list, model):
-#     # Filtrar palabras que están en el vocabulario de Word2Vec
-#     words = [word for word in word_list if word in model.wv.key_to_index]
-#     if len(words) == 0:
-#         return np.zeros(model.vector_size)
-#     # Promediar los vectores de todas las palabras
-#     return np.mean(model.wv[words], axis=0)
-
-# # Crear matriz de características Word2Vec
-# print("Creando características Word2Vec...")
-# w2v_features = np.array([document_vector(text.split(), w2v_model)
-#                          for text in train_df['processed_text']])
-
-# # Crear características TF-IDF
-# print("Creando características TF-IDF...")
-# tfidf_vectorizer = TfidfVectorizer(
-#     max_features=5000,
-#     ngram_range=(1, 3),           # Incluir unigramas, bigramas y trigramas
-#     min_df=3,                     # Ignorar términos muy raros
-#     max_df=0.85                   # Ignorar términos muy comunes
-# )
-# tfidf_features = tfidf_vectorizer.fit_transform(train_df['processed_text'])
-
-# # Crear características meta
-# print("Creando características meta...")
-# meta_extractor = MetaFeaturesExtractor()
-# meta_features = meta_extractor.transform(train_df['processed_text'])
-
-# # Combinar todas las características
-# print("Combinando todas las características...")
-# X_combined = hstack([tfidf_features, csr_matrix(w2v_features), csr_matrix(meta_features)])
-# y = train_df['decade'].values
-
-# print(f"Matriz final de características: {X_combined.shape}")
-
-# === 4) FEATURE ENGINEERING AVANZADO (MEJORADO) ===
 class MetaFeaturesExtractor(BaseEstimator, TransformerMixin):
-    """
-    Extractor de características meta del texto con métricas mejoradas.
-    """
+    """Extractor de características meta del texto con métricas mejoradas."""
+
     def fit(self, X, y=None):
         return self
 
@@ -433,193 +389,267 @@ class MetaFeaturesExtractor(BaseEstimator, TransformerMixin):
             char_count = len(text)
             word_count = len(words)
 
-            # Características básicas
             avg_word_length = np.mean([len(word) for word in words]) if words else 0
             unique_ratio = len(set(words)) / word_count if word_count else 0
-
-            # Nuevas características basadas en el diagnóstico
-            # 1. Densidad de puntuación (normalizada por longitud)
             punctuation_chars = sum(1 for char in text if char in '.,;:!?¿¡')
             punctuation_density = punctuation_chars / char_count if char_count else 0
-
-            # 2. Longitud del documento (chars y words)
-            # 3. Proporción de palabras largas (>6 caracteres) - indicador de complejidad
             long_words_ratio = sum(1 for word in words if len(word) > 6) / word_count if word_count else 0
-
-            # 4. Proporción de dígitos (puede indicar documentos técnicos/históricos)
             digit_ratio = sum(1 for char in text if char.isdigit()) / char_count if char_count else 0
 
             features.append([
                 avg_word_length,
                 unique_ratio,
                 punctuation_density,
-                np.log1p(char_count),  # Usar log para normalizar la cola larga
+                np.log1p(char_count),
                 np.log1p(word_count),
                 long_words_ratio,
-                digit_ratio
+                digit_ratio,
             ])
 
         return np.array(features)
 
-# === 5) VECTORIZACIÓN HÍBRIDA OPTIMIZADA ===
-# Preparar datos para Word2Vec
-sentences = [text.split() for text in train_df['processed_text']]
 
-# Entrenar modelo Word2Vec con parámetros optimizados
-print("Entrenando modelo Word2Vec...")
-w2v_model = Word2Vec(
-    sentences=sentences,
-    vector_size=150,    # Aumentado de 100 a 150 para capturar más información
-    window=8,           # Ventana más grande para contexto histórico
-    min_count=3,        # Ignorar palabras muy raras (consistente con min_df)
-    workers=-1,         # Usar todos los núcleos
-    epochs=15,          # Más épocas para mejor aprendizaje
-    sg=1                # Skip-gram funciona mejor con corpus más pequeños
+def to_csr_matrix(X):
+    """Asegura salida CSR para compatibilidad con combinaciones dispersas."""
+
+    if sparse.issparse(X):
+        return X
+    if isinstance(X, pd.Series):
+        X = X.values
+    if isinstance(X, list):
+        X = np.asarray(X)
+    return csr_matrix(X)
+
+
+class TextPreprocessor(BaseEstimator, TransformerMixin):
+    """Normaliza y limpia texto histórico dentro del pipeline."""
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X, y=None):
+        processed = [preprocess_text(text) for text in X]
+        return np.array(processed, dtype=object)
+
+
+class Word2VecTfidfVectorizer(BaseEstimator, TransformerMixin):
+    """Genera vectores de documento ponderados por TF-IDF a partir de Word2Vec."""
+
+    def __init__(
+        self,
+        vector_size=150,
+        window=8,
+        min_count=3,
+        epochs=15,
+        workers=None,
+        seed=42,
+        max_features=20000,
+    ):
+        self.vector_size = vector_size
+        self.window = window
+        self.min_count = min_count
+        self.epochs = epochs
+        self.workers = workers
+        self.seed = seed
+        self.max_features = max_features
+
+    def fit(self, X, y=None):
+        self.sentences_ = [doc.split() for doc in X]
+        workers = self.workers if self.workers is not None else (os.cpu_count() or 1)
+        self.model_ = Word2Vec(
+            sentences=self.sentences_,
+            vector_size=self.vector_size,
+            window=self.window,
+            min_count=self.min_count,
+            workers=workers,
+            epochs=self.epochs,
+            seed=self.seed,
+        )
+        self.word_tfidf_vectorizer_ = TfidfVectorizer(
+            analyzer="word",
+            ngram_range=(1, 1),
+            max_features=self.max_features,
+        )
+        self.word_tfidf_vectorizer_.fit(X)
+        self.feature_names_ = np.array(
+            self.word_tfidf_vectorizer_.get_feature_names_out()
+        )
+        return self
+
+    def transform(self, X, y=None):
+        if not hasattr(self, "model_"):
+            raise RuntimeError("Word2VecTfidfVectorizer debe ajustarse antes de transform().")
+
+        transformed = []
+        for doc in X:
+            tokens = doc.split()
+            if not tokens:
+                transformed.append(np.zeros(self.vector_size, dtype=np.float64))
+                continue
+
+            tfidf_vec = self.word_tfidf_vectorizer_.transform([doc])
+            if tfidf_vec.nnz == 0:
+                transformed.append(np.zeros(self.vector_size, dtype=np.float64))
+                continue
+
+            weights = {
+                self.feature_names_[idx]: value
+                for idx, value in zip(tfidf_vec.indices, tfidf_vec.data)
+            }
+
+            weighted_sum = np.zeros(self.vector_size, dtype=np.float64)
+            weight_total = 0.0
+            for token in tokens:
+                if token in weights and token in self.model_.wv.key_to_index:
+                    weight = weights[token]
+                    weighted_sum += self.model_.wv[token] * weight
+                    weight_total += weight
+
+            if weight_total == 0.0:
+                transformed.append(np.zeros(self.vector_size, dtype=np.float64))
+            else:
+                transformed.append(weighted_sum / weight_total)
+
+        if not transformed:
+            return np.zeros((0, self.vector_size), dtype=np.float64)
+
+        return np.vstack(transformed)
+
+
+print("\n=== CONFIGURANDO PIPELINE HÍBRIDA ===")
+
+tfidf_branch = TfidfVectorizer(
+    max_features=20000,
+    ngram_range=(1, 2),
+    min_df=3,
+    max_df=0.75,
+    sublinear_tf=True,
+    analyzer="word",
 )
-print("Word2Vec entrenado.")
 
-# Función mejorada para vectores de documentos
-def document_vector(word_list, model):
-    words = [word for word in word_list if word in model.wv.key_to_index]
-    if len(words) == 0:
-        return np.zeros(model.vector_size)
-
-    # Usar promedio ponderado por frecuencia de palabra en lugar de simple promedio
-    word_vectors = [model.wv[word] for word in words]
-    return np.mean(word_vectors, axis=0)
-
-# Crear matriz de características Word2Vec
-print("Creando características Word2Vec...")
-w2v_features = np.array([document_vector(text.split(), w2v_model)
-                         for text in train_df['processed_text']])
-
-# Crear características TF-IDF optimizadas según el diagnóstico
-print("Creando características TF-IDF...")
-tfidf_vectorizer = TfidfVectorizer(
-    max_features=30000,           # Aumentado de 5000 a 30000 para capturar más vocabulario
-    ngram_range=(1, 3),           # Mantener unigramas, bigramas y trigramas
-    min_df=3,                     # Ignorar términos que aparecen en menos de 3 documentos
-    max_df=0.75,                  # Más restrictivo (0.75 vs 0.85) para términos muy comunes
-    sublinear_tf=True,            # Usar log(1 + tf) para suavizar el impacto de términos frecuentes
-    analyzer='word',              # Analizar por palabras (no char n-grams)
-    stop_words=None               # Ya manejamos stopwords en el preprocesamiento
+w2v_branch = Pipeline(
+    steps=[
+        (
+            "w2v",
+            Word2VecTfidfVectorizer(
+                vector_size=150,
+                window=8,
+                min_count=3,
+                epochs=15,
+                workers=None,
+                seed=RANDOM_SEED,
+                max_features=20000,
+            ),
+        ),
+        ("to_sparse", FunctionTransformer(to_csr_matrix, accept_sparse=True)),
+    ]
 )
 
-tfidf_features = tfidf_vectorizer.fit_transform(train_df['processed_text'])
+meta_branch = Pipeline(
+    steps=[
+        ("meta", MetaFeaturesExtractor()),
+        ("scaler", StandardScaler(with_mean=False)),
+        ("to_sparse", FunctionTransformer(to_csr_matrix, accept_sparse=True)),
+    ]
+)
 
-# Crear características meta mejoradas
-print("Creando características meta...")
-meta_extractor = MetaFeaturesExtractor()
-meta_features = meta_extractor.transform(train_df['processed_text'])
+hybrid_features = FeatureUnion(
+    transformer_list=[
+        ("tfidf", tfidf_branch),
+        ("w2v", w2v_branch),
+        ("meta", meta_branch),
+    ]
+)
 
-# Combinar todas las características
-print("Combinando todas las características...")
-from scipy.sparse import hstack, csr_matrix
+text_pipeline = Pipeline(
+    steps=[
+        ("preprocess", TextPreprocessor()),
+        ("features", hybrid_features),
+    ]
+)
 
-X_combined = hstack([
-    tfidf_features,
-    csr_matrix(w2v_features),
-    csr_matrix(meta_features)
-])
-y = train_df['decade'].values
+preprocessor = ColumnTransformer(
+    transformers=[("text", text_pipeline, "text")],
+    remainder="drop",
+)
 
-print(f"Matriz final de características: {X_combined.shape}")
-print(f"Desglose: TF-IDF: {tfidf_features.shape}, Word2Vec: {w2v_features.shape}, Meta: {meta_features.shape}")
+classifier = LogisticRegression(
+    solver="saga",
+    penalty="elasticnet",
+    l1_ratio=0.5,
+    C=0.5,
+    max_iter=2000,
+    class_weight="balanced",
+    n_jobs=-1,
+    random_state=RANDOM_SEED,
+)
 
-"""SELECCIÓN Y OPTIMIZACIÓN DE MODELO"""
+hybrid_pipeline = Pipeline(
+    steps=[
+        ("preprocessor", preprocessor),
+        ("classifier", classifier),
+    ]
+)
 
+X = train_df[["text"]]
+y = train_df["decade"].astype(int).values
 
-
-
-
-# === 6) SELECCIÓN Y OPTIMIZACIÓN DE MODELO ===
-# Dividir datos
-# Split estratificado
 X_train, X_val, y_train, y_val = train_test_split(
-    X_combined, y, test_size=0.2, random_state=42, stratify=y
+    X,
+    y,
+    test_size=0.2,
+    stratify=y,
+    random_state=RANDOM_SEED,
 )
 
-models = {
-    'LogisticRegression(saga,L2)': LogisticRegression(
-        max_iter=1500, random_state=42, n_jobs=-1,
-        solver='saga', penalty='l2', verbose=1
-    )
-    #,
-    #'LinearSVC': LinearSVC(
-    #    random_state=42, max_iter=1500, verbose=1
-    #),
-    # Evita RandomForest con sparse grande: densifica y explota RAM/tiempo
-}
+print("Entrenando pipeline híbrida sobre el conjunto de entrenamiento...")
+hybrid_pipeline.fit(X_train, y_train)
 
-results = {}
-for name, model in models.items():
-    print(f"\nEntrenando {name}…")
-    model.fit(X_train, y_train)
-    y_pred = model.predict(X_val)
-    acc = accuracy_score(y_val, y_pred)
-    results[name] = acc
-    print(f"{name}  Accuracy: {acc:.4f}")
+val_predictions = hybrid_pipeline.predict(X_val)
+val_accuracy = accuracy_score(y_val, val_predictions)
+val_f1 = f1_score(y_val, val_predictions, average="macro")
 
-results_df = pd.DataFrame(list(results.items()), columns=['Model', 'Accuracy'])
-print("\nResultados:")
-print(results_df.sort_values('Accuracy', ascending=False))
+print(f"Accuracy de validación: {val_accuracy:.4f}")
+print(f"F1 macro de validación: {val_f1:.4f}")
 
-# === Guardar el modelo entrenado ===
-from joblib import dump, load
-import os
+print("Entrenando pipeline final sobre el dataset completo...")
+hybrid_pipeline.fit(X, y)
 
 MODEL_DIR = "/content/drive/MyDrive/ProyectoPLN/artifacts_decade_cls"
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-logreg_path = os.path.join(MODEL_DIR, "logreg_saga_l2.joblib")
+ARTIFACT_PATH = os.path.join(MODEL_DIR, "artifacts.joblib")
 
-# Suponiendo que `models['LogisticRegression(saga,L2)']` ya está fit en el loop
-best_model = models['LogisticRegression(saga,L2)']
-dump(best_model, logreg_path)
-print(f"Modelo guardado en: {logreg_path}")
+text_transformer = hybrid_pipeline.named_steps["preprocessor"].named_transformers_["text"]
+features_union = text_transformer.named_steps["features"]
+tfidf_vectorizer = dict(features_union.transformer_list)["tfidf"]
+w2v_pipeline = dict(features_union.transformer_list)["w2v"]
+meta_pipeline = dict(features_union.transformer_list)["meta"]
 
+artifacts = {
+    "pipeline": hybrid_pipeline,
+    "tfidf": tfidf_vectorizer,
+    "w2v": w2v_pipeline.named_steps["w2v"].model_,
+    "meta_scaler": meta_pipeline.named_steps["scaler"],
+}
 
-
-def load_table(path):
-    # Reemplaza por tu loader real si ya tienes uno
-    return pd.read_csv(path)
+dump(artifacts, ARTIFACT_PATH)
+print(f"Artefactos del modelo guardados en: {ARTIFACT_PATH}")
 
 print("Cargando eval.csv...")
 eval_df = load_table('/content/drive/MyDrive/ProyectoPLN/eval.csv')
 
-# Asegurar columnas procesadas en eval con EXACTAMENTE el mismo preprocesamiento
-eval_df["normalized_text"] = eval_df["text"].apply(normalize_historic_text)
-eval_df["processed_text"]  = eval_df["normalized_text"].apply(preprocess_text)
+loaded_artifacts = load(ARTIFACT_PATH)
+loaded_pipeline = loaded_artifacts["pipeline"]
 
-# W2V para eval (usando el MISMO modelo entrenado)
-print("Creando características Word2Vec (eval)...")
-w2v_eval = np.array([document_vector(t.split(), w2v_model) for t in eval_df["processed_text"]])
+print("Generando predicciones sobre el conjunto de evaluación...")
+eval_predictions = loaded_pipeline.predict(eval_df[["text"]])
 
-# TF-IDF para eval (usando el MISMO vectorizer)
-print("Creando características TF-IDF (eval)...")
-tfidf_eval = tfidf_vectorizer.transform(eval_df["processed_text"])
-
-# Meta-features para eval (usando el MISMO extractor)
-print("Creando características meta (eval)...")
-meta_eval = meta_extractor.transform(eval_df["processed_text"])
-
-# Combinar en el MISMO ORDEN que en train
-print("Combinando todas las características (eval)...")
-X_eval = hstack([tfidf_eval, csr_matrix(w2v_eval), csr_matrix(meta_eval)])
-print(f"X_eval: {X_eval.shape} | TF-IDF: {tfidf_eval.shape} | W2V: {w2v_eval.shape} | Meta: {meta_eval.shape}")
-
-# =========================
-# 5) PREDICCIÓN Y ARCHIVO DE RESPUESTA
-# =========================
-print("Prediciendo...")
-y_pred = loaded_model.predict(X_eval)
-
-# Formato EXACTO solicitado: "ID,answer"
 submission = pd.DataFrame({
-    "ID": eval_df["id"],        # eval.csv trae 'id' en minúsculas
-    "answer": y_pred            # décadas predichas
+    "ID": eval_df["id"],
+    "answer": eval_predictions,
 })
 
-# Guarda el CSV sin índice y con el header EXACTO
 out_path = '/content/drive/MyDrive/ProyectoPLN/submission.csv'
 submission.to_csv(out_path, index=False)
+print(f"Archivo de predicción guardado en: {out_path}")
